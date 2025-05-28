@@ -1,7 +1,11 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import mysql.connector
 import pymysql
 from flask_cors import CORS
+import os
+from werkzeug.utils import secure_filename
+import uuid
+from datetime import datetime
 
 app = Flask(__name__)
 # CORS(app)
@@ -11,6 +15,7 @@ app.config["MYSQL_USER"] = "root"
 app.config["MYSQL_PASSWORD"] = "deguzman09!"
 app.config["MYSQL_DB"] = "todo_db"
 app.config["DEBUG"] = True
+app.config['UPLOAD_FOLDER'] = './images'
 
 
 
@@ -24,15 +29,6 @@ def init_db():
     cursor = conn.cursor()
     
     try:
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS classification (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                class VARCHAR(10) NOT NULL
-            )
-            """
-        )
-
         # Create subjects table
         cursor.execute(
             """
@@ -40,8 +36,7 @@ def init_db():
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 name VARCHAR(100) NOT NULL,
                 img_filename VARCHAR(255),
-                classification_id INT NOT NULL,
-                FOREIGN KEY (classification_id) REFERENCES classification(id)
+                class VARCHAR(20) NOT NULL
             )
             """
         )
@@ -117,7 +112,7 @@ def get_subjects():
                         "id": subj[0], 
                         "name": subj[1],   
                         "img_filename": subj[2],
-                        "classification_id": subj[3]              
+                        "class": subj[3]              
                     }
                 )
             
@@ -150,12 +145,15 @@ def get_subject_tasks(subject_id):
         
         tasks = []
         for task in fetched_tasks:
+            # process format of deadline
+            deadline_dt = task[3].strftime("%Y-%m-%d %H:%M:%S")
+            
             tasks.append(
                 {
                     "id": task[0],
                     "name": task[1],
                     "description": task[2],
-                    "deadline": task[3],
+                    "deadline": deadline_dt,
                     "subject_id": task[4]
                 }
             )
@@ -169,8 +167,68 @@ def get_subject_tasks(subject_id):
         cursor.close()
         conn.close()
 
-@app.route('/classification/<string:classname>/subjects', methods=['GET'])
-def get_class_subjects(classname):
+# @app.route('/classification/<string:classname>/subjects', methods=['GET'])
+# def get_class_subjects(classname):
+#     conn = pymysql.connect(
+#         host=app.config["MYSQL_HOST"], 
+#         user=app.config["MYSQL_USER"], 
+#         password=app.config["MYSQL_PASSWORD"], 
+#         database=app.config["MYSQL_DB"]
+#     )
+#     cursor = conn.cursor()
+    
+#     try:
+#         if classname.lower() not in ["major", "minor"]:
+#             return jsonify({'error': "Invalid classification name"}), 404
+        
+#         cursor.execute("SELECT id FROM classification WHERE class = %s", {classname})
+#         class_id = cursor.fetchone()[0]
+        
+#         cursor.execute("SELECT * FROM subjects WHERE classification_id = %s", {class_id})
+#         fetched_subjects  = cursor.fetchall()
+#         subjects = []
+#         for subj in fetched_subjects:
+#             subjects.append(
+#                 {
+#                     "id": subj[0], 
+#                     "name": subj[1],   
+#                     "img_filename": subj[2],
+#                     "classification_id": subj[3]              
+#                 }
+#             )
+            
+#         return jsonify(subjects), 200
+    
+#     except Exception as e:
+#         return jsonify({'error': str(e)}), 500
+    
+#     finally: 
+#         cursor.close()
+#         conn.close()        
+        
+@app.route('/subjects', methods=['POST'])
+def create_subject():
+    name = request.form['name']
+    classname = request.form['classname']
+    image = request.files['image']
+    
+    if image is None or classname is None or name is None:
+        return jsonify({'error': 'Missing required fields'}), 404
+    
+    # grab image file name
+    img_filename = secure_filename(image.filename)
+    
+    # make img file name unique
+    img_name = str(uuid.uuid1()) + '_' + img_filename
+    
+    # build full img path
+    save_path = os.path.join(app.config['UPLOAD_FOLDER'], img_name)
+    
+    # save the img
+    image.save(save_path)
+    
+    
+    
     conn = pymysql.connect(
         host=app.config["MYSQL_HOST"], 
         user=app.config["MYSQL_USER"], 
@@ -180,35 +238,64 @@ def get_class_subjects(classname):
     cursor = conn.cursor()
     
     try:
-        if classname.lower() not in ["major", "minor"]:
-            return jsonify({'error': "Invalid classification name"}), 404
+        cursor.execute(
+            """
+            INSERT INTO subjects (name, img_filename, class)
+            VALUES (%s, %s, %s)
+            """, (name, img_name, classname)
+        )
         
-        cursor.execute("SELECT id FROM classification WHERE class = %s", {classname})
-        class_id = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT * FROM subjects WHERE classification_id = %s", {class_id})
-        fetched_subjects  = cursor.fetchall()
-        subjects = []
-        for subj in fetched_subjects:
-            subjects.append(
-                {
-                    "id": subj[0], 
-                    "name": subj[1],   
-                    "img_filename": subj[2],
-                    "classification_id": subj[3]              
-                }
-            )
-            
-        return jsonify(subjects), 200
+        conn.commit()
+        return jsonify({'response': 'Successfully created a subject'}), 200
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     
-    finally: 
+    finally:
         cursor.close()
-        conn.close()        
+        conn.close()    
+
+@app.route('/subjects/<int:subject_id>/tasks', methods=['POST'])
+def create_task(subject_id):
+    name = request.form['name']
+    description = request.form['description']
+    deadline = request.form['deadline']
+    
+    if deadline is None or name is None or description is None:
+        return jsonify({'error':'Missing required fields'})
+    
+    conn = pymysql.connect(
+        host=app.config["MYSQL_HOST"], 
+        user=app.config["MYSQL_USER"], 
+        password=app.config["MYSQL_PASSWORD"], 
+        database=app.config["MYSQL_DB"]
+    )
+    cursor = conn.cursor()
+    
+    try:
+        deadline_dt = datetime.strptime(deadline, '%Y-%m-%d %H:%M:%S')
+        cursor.execute(
+            """
+            INSERT INTO tasks (name, description, deadline, subject_id)
+            VALUES (%s, %s, %s, %s)
+            """, (name, description, deadline_dt, subject_id)
+        )
         
+        conn.commit()
+        return jsonify({'response': 'Task successfully created!'}), 200
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    
+    finally:
+        cursor.close()
+        conn.close()
+
+
 
 if __name__ == '__main__':
-    app.run()
+    if not os.path.exists(app.config['UPLOAD_FOLDER']):
+        os.makedirs(app.config['UPLOAD_FOLDER'])
+        
+    app.run(host='0.0.0.0', port=5000)
     
