@@ -12,12 +12,10 @@ app = Flask(__name__)
 
 app.config["MYSQL_HOST"] = "localhost"
 app.config["MYSQL_USER"] = "root"
-app.config["MYSQL_PASSWORD"] = "deguzman09!"
+app.config["MYSQL_PASSWORD"] = ""
 app.config["MYSQL_DB"] = "todo_db"
 app.config["DEBUG"] = True
 app.config['UPLOAD_FOLDER'] = './images'
-
-
 
 def init_db():
     conn = pymysql.connect(
@@ -283,7 +281,7 @@ def edit_subject(id):
     
     try:
         cursor.execute(
-            """
+            """ 
             UPDATE subjects
             SET name = %s, `class` = %s, img_filename = %s
             WHERE id = %s
