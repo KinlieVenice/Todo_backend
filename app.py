@@ -14,7 +14,7 @@ CORS(app)
 
 app.config["MYSQL_HOST"] = "localhost"
 app.config["MYSQL_USER"] = "root"
-app.config["MYSQL_PASSWORD"] = ""
+app.config["MYSQL_PASSWORD"] = "deguzman09!"
 app.config["MYSQL_DB"] = "todo_db"
 app.config["DEBUG"] = True
 app.config['UPLOAD_FOLDER'] = './images'
@@ -159,7 +159,6 @@ def get_indiv_subject(id):
         cursor.close()
         conn.close()
 
-
 @app.route('/subjects/<int:subject_id>/tasks', methods=['GET'])
 def get_subject_tasks(subject_id):
     conn = pymysql.connect(
@@ -223,6 +222,70 @@ def get_subject_tasks(subject_id):
         cursor.close()
         conn.close()
 
+@app.route('/tasks/<int:id>', methods=['GET'])
+def get_indiv_task(id):
+    conn = pymysql.connect(
+        host=app.config["MYSQL_HOST"], 
+        user=app.config["MYSQL_USER"], 
+        password=app.config["MYSQL_PASSWORD"], 
+        database=app.config["MYSQL_DB"]
+    )
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("SELECT * FROM tasks WHERE id = %s", (id))
+        
+        fetched_tasks = cursor.fetchall()
+        if not fetched_tasks:
+            return jsonify({'error': f'Task with an id of {id} is not found'}), 404
+        
+        tasks = []
+        ph_tz = pytz.timezone('Asia/Manila')
+        now_ph = datetime.now(ph_tz)
+        for task in fetched_tasks:
+            deadline_dt = task[3]  # naive datetime from DB
+
+            # Step 3: Get current time in Manila
+            # Step 4: Calculate difference
+            deadline_ph = ph_tz.localize(deadline_dt)
+            time_diff = deadline_ph - now_ph
+
+            # Now build the due_str as you did before
+            if time_diff.total_seconds() < 0:
+                due_str = "Past due"
+            elif time_diff.days > 0:
+                due_str = f"Due in {time_diff.days} day{'s' if time_diff.days > 1 else ''}"
+            elif time_diff.seconds >= 3600:
+                hours = time_diff.seconds // 3600
+                due_str = f"Due in {hours} hour{'s' if hours > 1 else ''}"
+            else:
+                due_str = "Due soon"
+
+            # Format date and time
+            formatted_date = deadline_dt.strftime("%B %d, %Y")
+            formatted_time = deadline_dt.strftime("%I:%M %p").lstrip("0")
+
+            # Append result
+            tasks.append({
+                "id": task[0],
+                "name": task[1],
+                "description": task[2],
+                "deadline_date": formatted_date,
+                "deadline_time": formatted_time,
+                "due_text": due_str,
+                "img_filename": task[4],
+                "subject_id": task[5]
+            })
+        return jsonify(tasks), 200
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @app.route('/subjects', methods=['POST'])
 def create_subject():
     name = request.form['name']
@@ -240,7 +303,7 @@ def create_subject():
     try:
         cursor.execute(
             """
-            INSERT INTO subjects (name, class, color)
+            INSERT INTO subjects (name, `class`, color)
             VALUES (%s, %s, %s)
             """, (name, classname, color)
         )
@@ -260,7 +323,7 @@ def create_task(subject_id):
     name = request.form['name']
     description = request.form['description']
     deadline = request.form['deadline']
-    image = request.files['img_filename']
+    image = request.files.get('img_filename')
     
     if deadline is None or image is None or name is None or description is None:
         return jsonify({'error':'Missing required fields'})
@@ -311,9 +374,10 @@ def create_task(subject_id):
 def edit_subject(id):
     name = request.form.get('name')
     classname = request.form.get('classname')
-    color = request.form('color')
+    color = request.form.get('color')  # fixed line
     
-    
+    print(f"Received PATCH request with: name={name}, classname={classname}, color={color}")
+
     conn = pymysql.connect(
         host=app.config["MYSQL_HOST"], 
         user=app.config["MYSQL_USER"], 
@@ -335,17 +399,18 @@ def edit_subject(id):
         return jsonify({'response': 'Subject successfully edited'}), 200
     
     except Exception as e:
+        print("ERROR:", str(e))  # Add log
         return jsonify({'error': str(e)}), 500
     
     finally:
         cursor.close()
-        conn.close() 
+        conn.close()
 
 @app.route('/tasks/<int:id>', methods=['PATCH'])
 def edit_task(id):
-    name = request.form['name']
-    description = request.form['description']
-    deadline = request.form['deadline']
+    name = request.form.get('name')
+    description = request.form.get('description')
+    deadline = request.form.get('deadline')
     image = request.files.get('image')
     
     if deadline is None or image is None or description is None or name is None:
@@ -455,7 +520,7 @@ def delete_task(id):
 
 @app.route('/images/<filename>')
 def uploaded_file(filename):
-    return send_from_directory('images', filename)
+    return send_from_directory('images', filename), 200
 
 
 if __name__ == '__main__':
