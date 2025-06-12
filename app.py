@@ -231,52 +231,95 @@ def get_indiv_task(id):
         database=app.config["MYSQL_DB"]
     )
     cursor = conn.cursor()
-    
+
     try:
-        cursor.execute("SELECT * FROM tasks WHERE id = %s", (id))
-        
-        fetched_tasks = cursor.fetchall()
-        if not fetched_tasks:
+        cursor.execute("SELECT * FROM tasks WHERE id = %s", (id,))
+        fetched_task = cursor.fetchone()
+
+        if not fetched_task:
             return jsonify({'error': f'Task with an id of {id} is not found'}), 404
-        
-        tasks = []
+
         ph_tz = pytz.timezone('Asia/Manila')
         now_ph = datetime.now(ph_tz)
-        for task in fetched_tasks:
-            deadline_dt = task[3]  # naive datetime from DB
 
-            # Step 3: Get current time in Manila
-            # Step 4: Calculate difference
-            deadline_ph = ph_tz.localize(deadline_dt)
-            time_diff = deadline_ph - now_ph
+        deadline_dt = fetched_task[3]  # naive datetime from DB
+        deadline_ph = ph_tz.localize(deadline_dt)
+        time_diff = deadline_ph - now_ph
 
-            # Now build the due_str as you did before
-            if time_diff.total_seconds() < 0:
-                due_str = "Past due"
-            elif time_diff.days > 0:
-                due_str = f"Due in {time_diff.days} day{'s' if time_diff.days > 1 else ''}"
-            elif time_diff.seconds >= 3600:
-                hours = time_diff.seconds // 3600
-                due_str = f"Due in {hours} hour{'s' if hours > 1 else ''}"
-            else:
-                due_str = "Due soon"
+        if time_diff.total_seconds() < 0:
+            due_str = "Past due"
+        elif time_diff.days > 0:
+            due_str = f"Due in {time_diff.days} day{'s' if time_diff.days > 1 else ''}"
+        elif time_diff.seconds >= 3600:
+            hours = time_diff.seconds // 3600
+            due_str = f"Due in {hours} hour{'s' if hours > 1 else ''}"
+        else:
+            due_str = "Due soon"
 
-            # Format date and time
-            formatted_date = deadline_dt.strftime("%B %d, %Y")
-            formatted_time = deadline_dt.strftime("%I:%M %p").lstrip("0")
+        formatted_date = deadline_dt.strftime("%B %d, %Y")
+        formatted_time = deadline_dt.strftime("%I:%M %p").lstrip("0")
 
-            # Append result
-            tasks.append({
-                "id": task[0],
-                "name": task[1],
-                "description": task[2],
-                "deadline_date": formatted_date,
-                "deadline_time": formatted_time,
-                "due_text": due_str,
-                "img_filename": task[4],
-                "subject_id": task[5]
-            })
-        return jsonify(tasks), 200
+        task = {
+            "id": fetched_task[0],
+            "name": fetched_task[1],
+            "description": fetched_task[2],
+            "deadline_date": formatted_date,
+            "deadline_time": formatted_time,
+            "due_text": due_str,
+            "img_filename": fetched_task[4],
+            "subject_id": fetched_task[5]
+        }
+
+        return jsonify(task), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.route('/subjects/majors', methods=['GET'])
+def get_subjects_major():
+    conn = pymysql.connect(
+        host=app.config["MYSQL_HOST"], 
+        user=app.config["MYSQL_USER"], 
+        password=app.config["MYSQL_PASSWORD"], 
+        database=app.config["MYSQL_DB"]
+    )
+    cursor = conn.cursor()
+    
+    try:
+        class_name = "major"
+        cursor.execute("SELECT * FROM subjects WHERE `class` = %s", (class_name))
+        
+        fetched_major = cursor.fetchall()
+        
+        if not fetched_major:
+            return [], 200
+        
+        majors = []
+        for major in fetched_major:
+            # subj_dict = {}
+            
+            # subj_dict["id"] = subj[0]
+            # subj_dict["name"] = subj[1]
+            # subj_dict["img_filename"] = subj[2]
+            # subj_dict["classification_id"] = subj[3]
+            
+            # subjects.append(subj_dict)
+            
+            majors.append(
+                    {
+                        "id": major[0], 
+                        "name": major[1],   
+                        "class": major[2],
+                        "color": major[3]              
+                    }
+                )
+            
+            
+        return jsonify(majors), 200
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -285,7 +328,55 @@ def get_indiv_task(id):
         cursor.close()
         conn.close()
 
-
+@app.route('/subjects/minors', methods=['GET'])
+def get_subjects_minor():
+    conn = pymysql.connect(
+        host=app.config["MYSQL_HOST"], 
+        user=app.config["MYSQL_USER"], 
+        password=app.config["MYSQL_PASSWORD"], 
+        database=app.config["MYSQL_DB"]
+    )
+    cursor = conn.cursor()
+    
+    try:
+        class_name = "minor"
+        cursor.execute("SELECT * FROM subjects WHERE `class` = %s", (class_name))
+        
+        fetched_minor = cursor.fetchall()
+        
+        if not fetched_minor:
+            return [], 200
+        
+        minors = []
+        for minor in fetched_minor:
+            # subj_dict = {}
+            
+            # subj_dict["id"] = subj[0]
+            # subj_dict["name"] = subj[1]
+            # subj_dict["img_filename"] = subj[2]
+            # subj_dict["classification_id"] = subj[3]
+            
+            # subjects.append(subj_dict)
+            
+            minors.append(
+                    {
+                        "id": minor[0], 
+                        "name": minor[1],   
+                        "class": minor[2],
+                        "color": minor[3]              
+                    }
+                )
+            
+            
+        return jsonify(minors), 200
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    
+    finally:
+        cursor.close()
+        conn.close()
+        
 @app.route('/subjects', methods=['POST'])
 def create_subject():
     name = request.form['name']
