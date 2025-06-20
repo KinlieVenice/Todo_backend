@@ -55,6 +55,7 @@ def init_db():
             )
             """
         )
+        # added an is_done column with default 0, deleted to not duplicate columns
         conn.commit()
         print("Successfully created tables!")
         
@@ -68,7 +69,6 @@ def init_db():
 # run one time only
 with app.app_context():
     init_db()  
-  
 
 # ROUTES  
 @app.route('/')
@@ -280,7 +280,7 @@ def get_indiv_task(id):
         conn.close()
 
 @app.route('/subjects/majors', methods=['GET'])
-def get_subjects_major():
+def get_major():
     conn = pymysql.connect(
         host=app.config["MYSQL_HOST"], 
         user=app.config["MYSQL_USER"], 
@@ -329,7 +329,7 @@ def get_subjects_major():
         conn.close()
 
 @app.route('/subjects/minors', methods=['GET'])
-def get_subjects_minor():
+def get_minor():
     conn = pymysql.connect(
         host=app.config["MYSQL_HOST"], 
         user=app.config["MYSQL_USER"], 
@@ -369,6 +369,61 @@ def get_subjects_minor():
             
             
         return jsonify(minors), 200
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    
+    finally:
+        cursor.close()
+        conn.close()
+        
+@app.route('/subjects/<int:subject_id>/tasks/done', methods=['GET'])
+def get_done():
+    conn = pymysql.connect(
+        host=app.config["MYSQL_HOST"], 
+        user=app.config["MYSQL_USER"], 
+        password=app.config["MYSQL_PASSWORD"], 
+        database=app.config["MYSQL_DB"]
+    )
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute(
+            """
+            SELECT * FROM tasks WHERE is_done = 1;
+            """
+        )
+        
+        fetched_done = cursor.fetchall()
+        
+        if not fetched_done:
+            return [], 200
+        
+        done = []
+        for indiv in fetched_done:
+            # subj_dict = {}
+            
+            # subj_dict["id"] = subj[0]
+            # subj_dict["name"] = subj[1]
+            # subj_dict["img_filename"] = subj[2]
+            # subj_dict["classification_id"] = subj[3]
+            
+            # subjects.append(subj_dict)
+            
+            done.append(
+                    {
+                        "id": indiv[0], 
+                        "name": indiv[1],   
+                        "description": indiv[2],
+                        "deadline": indiv[3],
+                        "img_filename": indiv[4],
+                        "subject_id": indiv[5],
+                        "is_done": indiv[6]              
+                    }
+                )
+            
+            
+        return jsonify(done), 200
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
