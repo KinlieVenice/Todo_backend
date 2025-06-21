@@ -14,7 +14,7 @@ CORS(app)
 
 app.config["MYSQL_HOST"] = "localhost"
 app.config["MYSQL_USER"] = "root"
-app.config["MYSQL_PASSWORD"] = "deguzman09!"
+app.config["MYSQL_PASSWORD"] = ""
 app.config["MYSQL_DB"] = "todo_db"
 app.config["DEBUG"] = True
 app.config['UPLOAD_FOLDER'] = './images'
@@ -170,7 +170,7 @@ def get_subject_tasks(subject_id):
     cursor = conn.cursor()
     
     try:
-        cursor.execute("SELECT * FROM tasks WHERE subject_id = %s", (subject_id))
+        cursor.execute("SELECT * FROM tasks WHERE subject_id = %s AND is_done = 0", (subject_id,))
         
         fetched_tasks = cursor.fetchall()
         if not fetched_tasks:
@@ -377,8 +377,63 @@ def get_minor():
         cursor.close()
         conn.close()
         
-@app.route('/subjects/<int:subject_id>/tasks/done', methods=['GET'])
-def get_done():
+# @app.route('/tasks/done', methods=['GET'])
+# def get_done():
+#     conn = pymysql.connect(
+#         host=app.config["MYSQL_HOST"], 
+#         user=app.config["MYSQL_USER"], 
+#         password=app.config["MYSQL_PASSWORD"], 
+#         database=app.config["MYSQL_DB"]
+#     )
+#     cursor = conn.cursor()
+    
+#     try:
+#         cursor.execute(
+#             """
+#             SELECT * FROM tasks WHERE is_done = 1;
+#             """
+#         )
+        
+#         fetched_done = cursor.fetchall()
+        
+#         if not fetched_done:
+#             return [], 200
+        
+#         done = []
+#         for indiv in fetched_done:
+#             # subj_dict = {}
+            
+#             # subj_dict["id"] = subj[0]
+#             # subj_dict["name"] = subj[1]
+#             # subj_dict["img_filename"] = subj[2]
+#             # subj_dict["classification_id"] = subj[3]
+            
+#             # subjects.append(subj_dict)
+            
+#             done.append(
+#                     {
+#                         "id": indiv[0], 
+#                         "name": indiv[1],   
+#                         "description": indiv[2],
+#                         "deadline": indiv[3],
+#                         "img_filename": indiv[4],
+#                         "subject_id": indiv[5],
+#                         "is_done": indiv[6]              
+#                     }
+#                 )
+            
+            
+#         return jsonify(done), 200
+    
+#     except Exception as e:
+#         return jsonify({'error': str(e)}), 500
+    
+#     finally:
+#         cursor.close()
+#         conn.close()
+
+@app.route('/tasks/done', methods=['GET'])
+def get_done_tasks():
     conn = pymysql.connect(
         host=app.config["MYSQL_HOST"], 
         user=app.config["MYSQL_USER"], 
@@ -388,42 +443,51 @@ def get_done():
     cursor = conn.cursor()
     
     try:
-        cursor.execute(
-            """
-            SELECT * FROM tasks WHERE is_done = 1;
-            """
-        )
+        cursor.execute("SELECT * FROM tasks WHERE is_done = 1")
         
-        fetched_done = cursor.fetchall()
+        fetched_tasks = cursor.fetchall()
+        if not fetched_tasks:
+            return jsonify({'error': f'Task is not found'}), 404
         
-        if not fetched_done:
-            return [], 200
-        
-        done = []
-        for indiv in fetched_done:
-            # subj_dict = {}
-            
-            # subj_dict["id"] = subj[0]
-            # subj_dict["name"] = subj[1]
-            # subj_dict["img_filename"] = subj[2]
-            # subj_dict["classification_id"] = subj[3]
-            
-            # subjects.append(subj_dict)
-            
-            done.append(
-                    {
-                        "id": indiv[0], 
-                        "name": indiv[1],   
-                        "description": indiv[2],
-                        "deadline": indiv[3],
-                        "img_filename": indiv[4],
-                        "subject_id": indiv[5],
-                        "is_done": indiv[6]              
-                    }
-                )
-            
-            
-        return jsonify(done), 200
+        tasks = []
+        ph_tz = pytz.timezone('Asia/Manila')
+        now_ph = datetime.now(ph_tz)
+        for task in fetched_tasks:
+            deadline_dt = task[3]  # naive datetime from DB
+
+            # Step 3: Get current time in Manila
+            # Step 4: Calculate difference
+            deadline_ph = ph_tz.localize(deadline_dt)
+            time_diff = deadline_ph - now_ph
+
+            # Now build the due_str as you did before
+            if time_diff.total_seconds() < 0:
+                due_str = "Past due"
+            elif time_diff.days > 0:
+                due_str = f"Due in {time_diff.days} day{'s' if time_diff.days > 1 else ''}"
+            elif time_diff.seconds >= 3600:
+                hours = time_diff.seconds // 3600
+                due_str = f"Due in {hours} hour{'s' if hours > 1 else ''}"
+            else:
+                due_str = "Due soon"
+
+            # Format date and time
+            formatted_date = deadline_dt.strftime("%B %d, %Y")
+            formatted_time = deadline_dt.strftime("%I:%M %p").lstrip("0")
+
+            # Append result
+            tasks.append({
+                "id": task[0],
+                "name": task[1],
+                "description": task[2],
+                "deadline_date": formatted_date,
+                "deadline_time": formatted_time,
+                "due_text": due_str,
+                "img_filename": task[4],
+                "subject_id": task[5],
+                "is_done": task[6]
+            })
+        return jsonify(tasks), 200
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -431,7 +495,7 @@ def get_done():
     finally:
         cursor.close()
         conn.close()
-        
+
 @app.route('/subjects', methods=['POST'])
 def create_subject():
     name = request.form['name']
@@ -601,6 +665,31 @@ def edit_task(id):
     finally:
         cursor.close()
         conn.close()    
+
+@app.route('/tasks/done/<int:id>', methods=['PATCH'])
+def mark_task_done(id):
+    data = request.get_json()
+    is_done = data.get('is_done', 1)
+
+    conn = pymysql.connect(
+        host=app.config["MYSQL_HOST"], 
+        user=app.config["MYSQL_USER"], 
+        password=app.config["MYSQL_PASSWORD"], 
+        database=app.config["MYSQL_DB"]
+    )
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("UPDATE tasks SET is_done = %s WHERE id = %s", (is_done, id))
+        conn.commit()
+        return jsonify({'message': 'Task marked as done'}), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
 
 @app.route('/subjects/<int:id>', methods=['DELETE'])
 def delete_subject(id):
