@@ -14,7 +14,7 @@ CORS(app)
 
 app.config["MYSQL_HOST"] = "localhost"
 app.config["MYSQL_USER"] = "root"
-app.config["MYSQL_PASSWORD"] = ""
+app.config["MYSQL_PASSWORD"] = "deguzman09!"
 app.config["MYSQL_DB"] = "todo_db"
 app.config["DEBUG"] = True
 app.config['UPLOAD_FOLDER'] = './images'
@@ -170,7 +170,12 @@ def get_subject_tasks(subject_id):
     cursor = conn.cursor()
     
     try:
-        cursor.execute("SELECT * FROM tasks WHERE subject_id = %s AND is_done = 0", (subject_id,))
+        cursor.execute("""
+            SELECT tasks.*, subjects.color AS subject_color 
+            FROM tasks 
+            JOIN subjects ON tasks.subject_id = subjects.id 
+            WHERE tasks.is_done = 0 AND tasks.subject_id = %s
+        """, (subject_id,))
         
         fetched_tasks = cursor.fetchall()
         if not fetched_tasks:
@@ -211,7 +216,8 @@ def get_subject_tasks(subject_id):
                 "deadline_time": formatted_time,
                 "due_text": due_str,
                 "img_filename": task[4],
-                "subject_id": task[5]
+                "subject_id": task[5],
+                "subject_color": task[7]
             })
         return jsonify(tasks), 200
     
@@ -443,7 +449,12 @@ def get_done_tasks():
     cursor = conn.cursor()
     
     try:
-        cursor.execute("SELECT * FROM tasks WHERE is_done = 1")
+        cursor.execute("""
+            SELECT tasks.*, subjects.name AS subject_name, subjects.class AS subject_class, subjects.color AS subject_color
+            FROM tasks
+            JOIN subjects ON tasks.subject_id = subjects.id
+            WHERE tasks.is_done = 1
+        """)
         
         fetched_tasks = cursor.fetchall()
         if not fetched_tasks:
@@ -485,7 +496,11 @@ def get_done_tasks():
                 "due_text": due_str,
                 "img_filename": task[4],
                 "subject_id": task[5],
-                "is_done": task[6]
+                "is_done": task[6],
+                "subject_name": task[7],     # newly added
+                "subject_class": task[8],     # newly added
+                "subject_color": task[9]     # newly added
+                
             })
         return jsonify(tasks), 200
     
@@ -690,6 +705,32 @@ def mark_task_done(id):
     finally:
         cursor.close()
         conn.close()
+
+@app.route('/tasks/undone/<int:id>', methods=['PATCH'])
+def unmark_task_done(id):
+    data = request.get_json()
+    is_done = data.get('is_done', 0)
+
+    conn = pymysql.connect(
+        host=app.config["MYSQL_HOST"], 
+        user=app.config["MYSQL_USER"], 
+        password=app.config["MYSQL_PASSWORD"], 
+        database=app.config["MYSQL_DB"]
+    )
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("UPDATE tasks SET is_done = %s WHERE id = %s", (is_done, id))
+        conn.commit()
+        return jsonify({'message': 'Task marked as done'}), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
 
 @app.route('/subjects/<int:id>', methods=['DELETE'])
 def delete_subject(id):
