@@ -3,29 +3,40 @@ import mysql.connector
 import pymysql
 from flask_cors import CORS
 import os
+from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash, check_password_hash
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pytz import timezone
 import pytz
+import re
+import jwt
+
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 
 app.config["MYSQL_HOST"] = "localhost"
 app.config["MYSQL_USER"] = "root"
-app.config["MYSQL_PASSWORD"] = "deguzman09!"
+app.config["MYSQL_PASSWORD"] = os.getenv("SQL_PASSWORD")
 app.config["MYSQL_DB"] = "todo_db"
 app.config["DEBUG"] = True
 app.config['UPLOAD_FOLDER'] = './images'
+app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY")
 
-def init_db():
-    conn = pymysql.connect(
-        host=app.config["MYSQL_HOST"], 
-        user=app.config["MYSQL_USER"], 
-        password=app.config["MYSQL_PASSWORD"], 
-        database=app.config["MYSQL_DB"]
+def get_db_connection():
+    return pymysql.connect(
+        host=app.config["MYSQL_HOST"],
+        user=app.config["MYSQL_USER"],
+        password=app.config["MYSQL_PASSWORD"],
+        database=app.config["MYSQL_DB"],
+        cursorclass=pymysql.cursors.DictCursor
     )
+    
+def init_db():
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     try:
@@ -50,12 +61,24 @@ def init_db():
                 description TEXT NOT NULL,
                 deadline DATETIME NOT NULL,
                 img_filename VARCHAR(255) NOT NULL,
+                is_done BOOLEAN NOT NULL DEFAULT 0,
                 subject_id INT NOT NULL,
                 FOREIGN KEY (subject_id) REFERENCES subjects(id)
             )
             """
         )
         # added an is_done column with default 0, deleted to not duplicate columns
+        
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users(   
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                username VARCHAR(20) NOT NULL UNIQUE,
+                email VARCHAR(100) NOT NULL UNIQUE,
+                password VARCHAR(255) NOT NULL
+            )
+            """
+        )
         conn.commit()
         print("Successfully created tables!")
         
@@ -70,19 +93,137 @@ def init_db():
 with app.app_context():
     init_db()  
 
-# ROUTES  
+# LOGIN REGISTER ROUTES
+# === validate email format ===
+def is_valid_email(email):
+    return re.match(r"[^@]+@[^@]+\.[^@]+", email)
+
+# === enforce strong password ===
+def is_strong_password(pw):
+    return (
+        len(pw) >= 8 and
+        re.search(r"\d", pw) and
+        re.search(r"[!@#$%^&*(),.?\":{}|<>]", pw)
+    )
+
+@app.route('/api/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    
+    username = data.get("username", "").strip()
+    email = data.get("email", "").strip()
+    password = data.get("password", "").strip()
+    confirm_password = data.get("confirm_password", "").strip()
+    
+    # === Validation ===
+    if not all([username, email, password, confirm_password]):
+        return jsonify({"error": "All fields are required"}), 400
+
+    if not re.match(r"^[a-zA-Z0-9_]{4,20}$", username):
+        return jsonify({"error": "Username must be 4–20 characters, alphanumeric with underscores only."}), 400
+
+    if not is_valid_email(email):
+        return jsonify({"error": "Invalid email format."}), 400
+
+    if not is_strong_password(password):
+        return jsonify({"error": "Password must be at least 8 characters, include a number and a symbol."}), 400
+
+    if password != confirm_password:
+        return jsonify({"error": "Passwords do not match."}), 400
+    
+    # === Hash password ===
+    hashed_pw = generate_password_hash(password)
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT * FROM users WHERE username = %s OR email = %s", (username, email))
+        existing = cursor.fetchone()
+        if existing:
+            if existing["username"] == username:
+                return jsonify({"error": "Username already taken"}), 409
+            if existing["email"] == email:
+                return jsonify({"error": "Email already registered"}), 409
+        
+        # === Save user ===
+        cursor.execute(
+            "INSERT INTO users (username, email, password) VALUES (%s, %s, %s)",
+            (username, email, hashed_pw)
+        )
+        
+        conn.commit()
+        
+        # === Get the newly made user id ===
+        user_id = cursor.lastrowid
+        
+        # === Generate JWT Token ===
+        token = jwt.encode({
+            "user_id": user_id,
+            "username": username,
+            "exp": int((datetime.utcnow() + timedelta(days=30)).timestamp())
+        }, app.config["SECRET_KEY"], algorithm="HS256")
+        
+        return jsonify({"message": "Registration successful", "token": token}), 201
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.route("/api/login", methods=["POST"])
+def login():
+    data = request.get_json()
+    username_or_email = data.get("username_or_email", "").strip()
+    password = data.get("password", "").strip()
+
+    if not username_or_email or not password:
+        return jsonify({"error": "Both fields are required"}), 400
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Find user by username or email
+        cursor.execute(
+            "SELECT * FROM users WHERE username = %s OR email = %s",
+            (username_or_email, username_or_email)
+        )
+        user = cursor.fetchone()
+
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+
+        # Check password
+        if not check_password_hash(user["password"], password):
+            return jsonify({"error": "Incorrect password"}), 401
+
+        # Create JWT token
+        token = jwt.encode({
+            "user_id": user["id"],
+            "username": user["username"],
+            "expire": int((datetime.utcnow() + timedelta(days=30)).timestamp())
+        }, app.config["SECRET_KEY"], algorithm="HS256")
+
+        return jsonify({"message": "Login successful", "token": token}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+        
+# ACTUAL NOTES ROUTES  
 @app.route('/')
 def home():
     return "Hello world!"
 
 @app.route('/subjects', methods=['GET'])
 def get_subjects():
-    conn = pymysql.connect(
-        host=app.config["MYSQL_HOST"], 
-        user=app.config["MYSQL_USER"], 
-        password=app.config["MYSQL_PASSWORD"], 
-        database=app.config["MYSQL_DB"]
-    )
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     try:
@@ -730,7 +871,6 @@ def unmark_task_done(id):
     finally:
         cursor.close()
         conn.close()
-
 
 @app.route('/subjects/<int:id>', methods=['DELETE'])
 def delete_subject(id):
