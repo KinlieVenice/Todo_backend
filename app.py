@@ -12,6 +12,7 @@ from pytz import timezone
 import pytz
 import re
 import jwt
+from functools import wraps
 
 load_dotenv()
 
@@ -34,7 +35,7 @@ def get_db_connection():
         database=app.config["MYSQL_DB"],
         cursorclass=pymysql.cursors.DictCursor
     )
-    
+
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -43,11 +44,23 @@ def init_db():
         # Create subjects table
         cursor.execute(
             """
+            CREATE TABLE IF NOT EXISTS users(   
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                username VARCHAR(20) NOT NULL UNIQUE,
+                email VARCHAR(100) NOT NULL UNIQUE,
+                password VARCHAR(255) NOT NULL
+            )
+            """
+        )
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS subjects (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 name VARCHAR(100) NOT NULL,
                 class VARCHAR(20) NOT NULL,
-                color VARCHAR(20)
+                color VARCHAR(20),
+                user_id INT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
             """
         )
@@ -63,22 +76,15 @@ def init_db():
                 img_filename VARCHAR(255) NOT NULL,
                 is_done BOOLEAN NOT NULL DEFAULT 0,
                 subject_id INT NOT NULL,
-                FOREIGN KEY (subject_id) REFERENCES subjects(id)
+                user_id INT NOT NULL,
+                FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
             """
         )
         # added an is_done column with default 0, deleted to not duplicate columns
         
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users(   
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                username VARCHAR(20) NOT NULL UNIQUE,
-                email VARCHAR(100) NOT NULL UNIQUE,
-                password VARCHAR(255) NOT NULL
-            )
-            """
-        )
+
         conn.commit()
         print("Successfully created tables!")
         
@@ -94,17 +100,50 @@ with app.app_context():
     init_db()  
 
 # LOGIN REGISTER ROUTES
-# === validate email format ===
-def is_valid_email(email):
-    return re.match(r"[^@]+@[^@]+\.[^@]+", email)
 
-# === enforce strong password ===
-def is_strong_password(pw):
-    return (
-        len(pw) >= 8 and
-        re.search(r"\d", pw) and
-        re.search(r"[!@#$%^&*(),.?\":{}|<>]", pw)
-    )
+@app.route("/api/login", methods=["POST"])
+def login():
+    data = request.get_json()
+    username_or_email = data.get("username_or_email", "").strip()
+    password = data.get("password", "").strip()
+
+    if not username_or_email or not password:
+        return jsonify({"error": "Both fields are required"}), 400
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Find user by username or email
+        cursor.execute(
+            "SELECT * FROM users WHERE username = %s OR email = %s",
+            (username_or_email, username_or_email)
+        )
+        user = cursor.fetchone()
+
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+
+        # Check password
+        if not check_password_hash(user["password"], password):
+            return jsonify({"error": "Incorrect password"}), 401
+
+        # Create JWT token
+        token = jwt.encode({
+            "user_id": user["id"],
+            "username": user["username"],
+            "exp": int((datetime.utcnow() + timedelta(days=30)).timestamp())
+        }, app.config["SECRET_KEY"], algorithm="HS256")
+
+        return jsonify({"message": "Login successful", "token": token}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
 
 @app.route('/api/register', methods=['POST'])
 def register():
@@ -173,167 +212,122 @@ def register():
         cursor.close()
         conn.close()
 
-@app.route("/api/login", methods=["POST"])
-def login():
-    data = request.get_json()
-    username_or_email = data.get("username_or_email", "").strip()
-    password = data.get("password", "").strip()
 
-    if not username_or_email or not password:
-        return jsonify({"error": "Both fields are required"}), 400
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = request.headers.get("Authorization")
 
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        if not token:
+            return jsonify({"error": "Token is missing"}), 401
 
-        # Find user by username or email
-        cursor.execute(
-            "SELECT * FROM users WHERE username = %s OR email = %s",
-            (username_or_email, username_or_email)
-        )
-        user = cursor.fetchone()
+        try:
+            decoded = jwt.decode(token, app.config["SECRET_KEY"], algorithms=["HS256"])
+            request.user_id = decoded["user_id"]
+        except jwt.ExpiredSignatureError:
+            return jsonify({"error": "Token has expired"}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({"error": "Invalid token"}), 401
 
-        if not user:
-            return jsonify({"error": "User not found"}), 404
+        return f(*args, **kwargs)
+    return decorated
 
-        # Check password
-        if not check_password_hash(user["password"], password):
-            return jsonify({"error": "Incorrect password"}), 401
 
-        # Create JWT token
-        token = jwt.encode({
-            "user_id": user["id"],
-            "username": user["username"],
-            "expire": int((datetime.utcnow() + timedelta(days=30)).timestamp())
-        }, app.config["SECRET_KEY"], algorithm="HS256")
+# === validate email format ===
+def is_valid_email(email):
+    return re.match(r"[^@]+@[^@]+\.[^@]+", email)
 
-        return jsonify({"message": "Login successful", "token": token}), 200
+# === enforce strong password ===
+def is_strong_password(pw):
+    return (
+        len(pw) >= 8 and
+        re.search(r"\d", pw) and
+        re.search(r"[!@#$%^&*(),.?\":{}|<>]", pw)
+    )
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-    finally:
-        cursor.close()
-        conn.close()
-        
+    
 # ACTUAL NOTES ROUTES  
 @app.route('/')
 def home():
     return "Hello world!"
 
 @app.route('/subjects', methods=['GET'])
+@token_required
 def get_subjects():
+    user_id = request.user_id  # ✅ user_id extracted from token
+
     conn = get_db_connection()
     cursor = conn.cursor()
-    
+
     try:
         cursor.execute(
-            """
-            SELECT * FROM subjects;
-            """
+            "SELECT id, name, class, color FROM subjects WHERE user_id = %s",
+            (user_id,)
         )
-        
+
         fetched_subjects = cursor.fetchall()
-        
+
         if not fetched_subjects:
-            return [], 200
-        
+            return jsonify([]), 200
+
         subjects = []
         for subj in fetched_subjects:
-            # subj_dict = {}
-            
-            # subj_dict["id"] = subj[0]
-            # subj_dict["name"] = subj[1]
-            # subj_dict["img_filename"] = subj[2]
-            # subj_dict["classification_id"] = subj[3]
-            
-            # subjects.append(subj_dict)
-            
-            subjects.append(
-                    {
-                        "id": subj[0], 
-                        "name": subj[1],   
-                        "class": subj[2],
-                        "color": subj[3]              
-                    }
-                )
-            
-            
-        return jsonify(subjects), 200
-    
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    
-    finally:
-        cursor.close()
-        conn.close()
-        
-@app.route('/subjects/<int:id>', methods=['GET'])
-def get_indiv_subject(id):
-    conn = pymysql.connect(
-        host=app.config["MYSQL_HOST"], 
-        user=app.config["MYSQL_USER"], 
-        password=app.config["MYSQL_PASSWORD"], 
-        database=app.config["MYSQL_DB"]
-    )
-    cursor = conn.cursor()
-    
-    try:
-        cursor.execute("SELECT * FROM subjects WHERE id = %s", (id))
-        
-        fetched_subject = cursor.fetchone()
-        if not fetched_subject:
-            return jsonify({'error': f'Subject with id {id} not found'}), 404
+            subjects.append({
+                "id": subj["id"], 
+                "name": subj["name"],   
+                "class": subj["class"],
+                "color": subj["color"]
+            })
 
-        subject = {
-            "id": fetched_subject[0],
-            "name": fetched_subject[1],
-            "img_filename": fetched_subject[2],
-            "class": fetched_subject[3]
-        }
-        return jsonify(subject), 200
-    
+        return jsonify(subjects), 200
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-    
+
     finally:
         cursor.close()
         conn.close()
 
 @app.route('/subjects/<int:subject_id>/tasks', methods=['GET'])
+@token_required
 def get_subject_tasks(subject_id):
+    user_id = request.user_id
+
     conn = pymysql.connect(
-        host=app.config["MYSQL_HOST"], 
-        user=app.config["MYSQL_USER"], 
-        password=app.config["MYSQL_PASSWORD"], 
-        database=app.config["MYSQL_DB"]
+        host=app.config["MYSQL_HOST"],
+        user=app.config["MYSQL_USER"],
+        password=app.config["MYSQL_PASSWORD"],
+        database=app.config["MYSQL_DB"],
+        cursorclass=pymysql.cursors.DictCursor  # Return dicts instead of tuples
     )
     cursor = conn.cursor()
-    
+
     try:
+        # Step 1: Get tasks for the user and subject
         cursor.execute("""
-            SELECT tasks.*, subjects.color AS subject_color 
-            FROM tasks 
-            JOIN subjects ON tasks.subject_id = subjects.id 
-            WHERE tasks.is_done = 0 AND tasks.subject_id = %s
-        """, (subject_id,))
-        
+            SELECT * FROM tasks 
+            WHERE is_done = 0 AND subject_id = %s AND user_id = %s
+        """, (subject_id, user_id))
         fetched_tasks = cursor.fetchall()
+
         if not fetched_tasks:
-            return jsonify({'error': f'Subject with an id of {subject_id} is not found'}), 404
-        
+            return jsonify([]), 200
+
+        # Step 2: Get subject color
+        cursor.execute("SELECT color FROM subjects WHERE id = %s", (subject_id,))
+        subject = cursor.fetchone()
+        subject_color = subject["color"] if subject else "#000000"
+
+        # Step 3: Format response
         tasks = []
         ph_tz = pytz.timezone('Asia/Manila')
         now_ph = datetime.now(ph_tz)
-        for task in fetched_tasks:
-            deadline_dt = task[3]  # naive datetime from DB
 
-            # Step 3: Get current time in Manila
-            # Step 4: Calculate difference
+        for task in fetched_tasks:
+            deadline_dt = task["deadline"]
             deadline_ph = ph_tz.localize(deadline_dt)
             time_diff = deadline_ph - now_ph
 
-            # Now build the due_str as you did before
             if time_diff.total_seconds() < 0:
                 due_str = "Past due"
             elif time_diff.days > 0:
@@ -344,23 +338,205 @@ def get_subject_tasks(subject_id):
             else:
                 due_str = "Due soon"
 
-            # Format date and time
             formatted_date = deadline_dt.strftime("%B %d, %Y")
             formatted_time = deadline_dt.strftime("%I:%M %p").lstrip("0")
 
-            # Append result
             tasks.append({
-                "id": task[0],
-                "name": task[1],
-                "description": task[2],
+                "id": task["id"],
+                "name": task["name"],
+                "description": task["description"],
                 "deadline_date": formatted_date,
                 "deadline_time": formatted_time,
                 "due_text": due_str,
-                "img_filename": task[4],
-                "subject_id": task[5],
-                "subject_color": task[7]
+                "img_filename": task["img_filename"],
+                "subject_id": task["subject_id"],
+                "subject_color": subject_color
             })
+
         return jsonify(tasks), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.route('/subjects/<int:subject_id>/tasks', methods=['POST'])
+@token_required
+def create_task(subject_id):
+    user_id = request.user_id
+    name = request.form['name']
+    description = request.form['description']
+    deadline = request.form['deadline']
+    image = request.files.get('img_filename')
+    
+    if deadline is None or image is None or name is None or description is None:
+        return jsonify({'error': 'Missing required fields'}), 400
+    
+    img_filename = secure_filename(image.filename)
+    img_name = str(uuid.uuid1()) + '_' + img_filename
+    save_path = os.path.join(app.config['UPLOAD_FOLDER'], img_name)
+    image.save(save_path)
+    
+    conn = pymysql.connect(
+        host=app.config["MYSQL_HOST"], 
+        user=app.config["MYSQL_USER"], 
+        password=app.config["MYSQL_PASSWORD"], 
+        database=app.config["MYSQL_DB"]
+    )
+    cursor = conn.cursor()
+    
+    try:
+        deadline_dt = datetime.strptime(deadline, '%Y-%m-%d %H:%M:%S')
+
+        cursor.execute(
+            """
+            INSERT INTO tasks (name, description, deadline, img_filename, subject_id, user_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """, (name, description, deadline_dt, img_name, subject_id, user_id)
+        )
+        
+        conn.commit()
+        return jsonify({'response': 'Task successfully created!', 'img_filename': img_name}), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.route('/subjects', methods=['POST'])
+@token_required
+def create_subject():
+    user_id = request.user_id  
+    name = request.form['name']
+    classname = request.form['classname']
+    color = request.form['color']
+
+    conn = pymysql.connect(
+        host=app.config["MYSQL_HOST"],
+        user=app.config["MYSQL_USER"],
+        password=app.config["MYSQL_PASSWORD"],
+        database=app.config["MYSQL_DB"]
+    )
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """
+            INSERT INTO subjects (name, `class`, color, user_id)
+            VALUES (%s, %s, %s, %s)
+            """, (name, classname, color, user_id)
+        )
+
+        conn.commit()
+        return jsonify({'response': 'Successfully created a subject'}), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.route('/subjects/<int:id>', methods=['DELETE'])
+@token_required
+def delete_subject(id):
+    user_id = request.user_id  # Retrieved from the JWT token
+
+    conn = pymysql.connect(
+        host=app.config["MYSQL_HOST"], 
+        user=app.config["MYSQL_USER"], 
+        password=app.config["MYSQL_PASSWORD"], 
+        database=app.config["MYSQL_DB"],
+        cursorclass=pymysql.cursors.DictCursor
+    )
+    cursor = conn.cursor()
+
+    try:
+        # Check if the subject exists and belongs to the user
+        cursor.execute("SELECT * FROM subjects WHERE id = %s AND user_id = %s", (id, user_id))
+        subject = cursor.fetchone()
+
+        if not subject:
+            return jsonify({'error': 'Subject not found or unauthorized'}), 404
+
+        # Delete tasks associated with this subject
+        cursor.execute("DELETE FROM tasks WHERE subject_id = %s AND user_id = %s", (id, user_id))
+
+        # Delete the subject
+        cursor.execute("DELETE FROM subjects WHERE id = %s AND user_id = %s", (id, user_id))
+
+        conn.commit()
+        return jsonify({'response': 'Subject successfully deleted'}), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.route('/tasks/<int:id>', methods=['DELETE'])
+@token_required
+def delete_task(id):
+    user_id = request.user_id  # Extracted from JWT token
+
+    conn = pymysql.connect(
+        host=app.config["MYSQL_HOST"],
+        user=app.config["MYSQL_USER"],
+        password=app.config["MYSQL_PASSWORD"],
+        database=app.config["MYSQL_DB"]
+    )
+    cursor = conn.cursor()
+
+    try:
+        # Step 1: Check if the task belongs to the logged-in user
+        cursor.execute("SELECT user_id FROM tasks WHERE id = %s", (id,))
+        task = cursor.fetchone()
+
+        if not task:
+            return jsonify({'error': 'Task not found'}), 404
+
+        if task[0] != user_id:
+            return jsonify({'error': 'Unauthorized to delete this task'}), 403
+
+        # Step 2: Proceed to delete
+        cursor.execute("DELETE FROM tasks WHERE id = %s", (id,))
+        conn.commit()
+
+        return jsonify({'response': 'Task successfully deleted!'}), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.route('/subjects/<int:id>', methods=['GET'])
+@token_required
+def get_indiv_subject(id):
+    user_id = request.user_id  # Extracted from JWT token
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("SELECT * FROM subjects WHERE id = %s AND user_id = %s", (id, user_id))
+        
+        subj = cursor.fetchone()
+        if not subj:
+            return jsonify({'error': f'Subject with id {id} not found'}), 404
+
+        subject = {
+            "id": subj["id"], 
+            "name": subj["name"],   
+            "class": subj["class"],
+            "color": subj["color"]
+        }
+        return jsonify(subject), 200
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -524,95 +700,55 @@ def get_minor():
         cursor.close()
         conn.close()
         
-# @app.route('/tasks/done', methods=['GET'])
-# def get_done():
-#     conn = pymysql.connect(
-#         host=app.config["MYSQL_HOST"], 
-#         user=app.config["MYSQL_USER"], 
-#         password=app.config["MYSQL_PASSWORD"], 
-#         database=app.config["MYSQL_DB"]
-#     )
-#     cursor = conn.cursor()
-    
-#     try:
-#         cursor.execute(
-#             """
-#             SELECT * FROM tasks WHERE is_done = 1;
-#             """
-#         )
-        
-#         fetched_done = cursor.fetchall()
-        
-#         if not fetched_done:
-#             return [], 200
-        
-#         done = []
-#         for indiv in fetched_done:
-#             # subj_dict = {}
-            
-#             # subj_dict["id"] = subj[0]
-#             # subj_dict["name"] = subj[1]
-#             # subj_dict["img_filename"] = subj[2]
-#             # subj_dict["classification_id"] = subj[3]
-            
-#             # subjects.append(subj_dict)
-            
-#             done.append(
-#                     {
-#                         "id": indiv[0], 
-#                         "name": indiv[1],   
-#                         "description": indiv[2],
-#                         "deadline": indiv[3],
-#                         "img_filename": indiv[4],
-#                         "subject_id": indiv[5],
-#                         "is_done": indiv[6]              
-#                     }
-#                 )
-            
-            
-#         return jsonify(done), 200
-    
-#     except Exception as e:
-#         return jsonify({'error': str(e)}), 500
-    
-#     finally:
-#         cursor.close()
-#         conn.close()
-
-@app.route('/tasks/done', methods=['GET'])
+@app.route('/subjects/tasks/done', methods=['GET'])
+@token_required
 def get_done_tasks():
+    user_id = request.user_id
+
     conn = pymysql.connect(
-        host=app.config["MYSQL_HOST"], 
-        user=app.config["MYSQL_USER"], 
-        password=app.config["MYSQL_PASSWORD"], 
+        host=app.config["MYSQL_HOST"],
+        user=app.config["MYSQL_USER"],
+        password=app.config["MYSQL_PASSWORD"],
         database=app.config["MYSQL_DB"]
     )
     cursor = conn.cursor()
-    
+
     try:
+        # Get all done tasks for the user
         cursor.execute("""
-            SELECT tasks.*, subjects.name AS subject_name, subjects.class AS subject_class, subjects.color AS subject_color
+            SELECT id, name, description, deadline, img_filename, subject_id, is_done
             FROM tasks
-            JOIN subjects ON tasks.subject_id = subjects.id
-            WHERE tasks.is_done = 1
-        """)
-        
+            WHERE is_done = 1 AND user_id = %s
+        """, (user_id,))
         fetched_tasks = cursor.fetchall()
+
         if not fetched_tasks:
-            return jsonify({'error': f'Task is not found'}), 404
-        
+            return jsonify([]), 200  # Empty list is okay
+
         tasks = []
         ph_tz = pytz.timezone('Asia/Manila')
         now_ph = datetime.now(ph_tz)
-        for task in fetched_tasks:
-            deadline_dt = task[3]  # naive datetime from DB
 
-            # Step 3: Get current time in Manila
-            # Step 4: Calculate difference
+        for task in fetched_tasks:
+            task_id, name, description, deadline_dt, img_filename, subject_id, is_done = task
+
+            # Get subject details per task
+            cursor.execute("""
+                SELECT name, class, color
+                FROM subjects
+                WHERE id = %s AND user_id = %s
+            """, (subject_id, user_id))
+            subject = cursor.fetchone()
+
+            if not subject:
+                continue  # skip if subject not found (in case of orphan task)
+
+            subject_name, subject_class, subject_color = subject
+
+            # Manila deadline calculations
             deadline_ph = ph_tz.localize(deadline_dt)
             time_diff = deadline_ph - now_ph
 
-            # Now build the due_str as you did before
             if time_diff.total_seconds() < 0:
                 due_str = "Past due"
             elif time_diff.days > 0:
@@ -623,115 +759,29 @@ def get_done_tasks():
             else:
                 due_str = "Due soon"
 
-            # Format date and time
             formatted_date = deadline_dt.strftime("%B %d, %Y")
             formatted_time = deadline_dt.strftime("%I:%M %p").lstrip("0")
 
-            # Append result
             tasks.append({
-                "id": task[0],
-                "name": task[1],
-                "description": task[2],
+                "id": task_id,
+                "name": name,
+                "description": description,
                 "deadline_date": formatted_date,
                 "deadline_time": formatted_time,
                 "due_text": due_str,
-                "img_filename": task[4],
-                "subject_id": task[5],
-                "is_done": task[6],
-                "subject_name": task[7],     # newly added
-                "subject_class": task[8],     # newly added
-                "subject_color": task[9]     # newly added
-                
+                "img_filename": img_filename,
+                "subject_id": subject_id,
+                "is_done": is_done,
+                "subject_name": subject_name,
+                "subject_class": subject_class,
+                "subject_color": subject_color
             })
+
         return jsonify(tasks), 200
-    
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-    
-    finally:
-        cursor.close()
-        conn.close()
 
-@app.route('/subjects', methods=['POST'])
-def create_subject():
-    name = request.form['name']
-    classname = request.form['classname']
-    color = request.form['color']
-    
-    conn = pymysql.connect(
-        host=app.config["MYSQL_HOST"], 
-        user=app.config["MYSQL_USER"], 
-        password=app.config["MYSQL_PASSWORD"], 
-        database=app.config["MYSQL_DB"]
-    )
-    cursor = conn.cursor()
-    
-    try:
-        cursor.execute(
-            """
-            INSERT INTO subjects (name, `class`, color)
-            VALUES (%s, %s, %s)
-            """, (name, classname, color)
-        )
-        
-        conn.commit()
-        return jsonify({'response': 'Successfully created a subject'}), 200
-    
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    
-    finally:
-        cursor.close()
-        conn.close()    
-
-@app.route('/subjects/<int:subject_id>/tasks', methods=['POST'])
-def create_task(subject_id):
-    name = request.form['name']
-    description = request.form['description']
-    deadline = request.form['deadline']
-    image = request.files.get('img_filename')
-    
-    if deadline is None or image is None or name is None or description is None:
-        return jsonify({'error':'Missing required fields'})
-    
-    # grab image file name
-    img_filename = secure_filename(image.filename)
-    
-    # make img file name unique
-    img_name = str(uuid.uuid1()) + '_' + img_filename
-    
-    
-    # build full img path
-    save_path = os.path.join(app.config['UPLOAD_FOLDER'], img_name)
-    
-    # save the img
-    image.save(save_path)
-    
-    
-    conn = pymysql.connect(
-        host=app.config["MYSQL_HOST"], 
-        user=app.config["MYSQL_USER"], 
-        password=app.config["MYSQL_PASSWORD"], 
-        database=app.config["MYSQL_DB"]
-    )
-    cursor = conn.cursor()
-    
-    try:
-        deadline_dt = datetime.strptime(deadline, '%Y-%m-%d %H:%M:%S')
-        cursor.execute(
-            """
-            INSERT INTO tasks (name, description, deadline, img_filename, subject_id)
-            VALUES (%s, %s, %s, %s, %s)
-            """, (name, description, deadline_dt, img_name, subject_id)
-        )
-        
-        conn.commit()
-        return jsonify({'response': 'Task successfully created!', 'img_filename': img_name}), 200
-
-    
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    
     finally:
         cursor.close()
         conn.close()
@@ -872,67 +922,6 @@ def unmark_task_done(id):
         cursor.close()
         conn.close()
 
-@app.route('/subjects/<int:id>', methods=['DELETE'])
-def delete_subject(id):
-    conn = pymysql.connect(
-        host=app.config["MYSQL_HOST"], 
-        user=app.config["MYSQL_USER"], 
-        password=app.config["MYSQL_PASSWORD"], 
-        database=app.config["MYSQL_DB"]
-    )
-    cursor = conn.cursor()
-    
-    try:
-        cursor.execute(
-            """
-            DELETE FROM tasks
-            WHERE subject_id = %s
-            """, (id,)
-        )
-        cursor.execute(
-            """
-            DELETE FROM subjects
-            WHERE id = %s
-            """, (id,)
-        )
-        
-        conn.commit()
-        return jsonify({'response': 'Subject successfully deleted'}), 200
-    
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    
-    finally:
-        cursor.close()
-        conn.close() 
-
-@app.route('/tasks/<int:id>', methods=['DELETE'])
-def delete_task(id):
-    conn = pymysql.connect(
-        host=app.config["MYSQL_HOST"], 
-        user=app.config["MYSQL_USER"], 
-        password=app.config["MYSQL_PASSWORD"], 
-        database=app.config["MYSQL_DB"]
-    )
-    cursor = conn.cursor()
-    
-    try:
-        cursor.execute(
-            """
-            DELETE FROM tasks
-            WHERE id = %s
-            """, (id,)
-        )
-        
-        conn.commit()
-        return jsonify({'response': 'Task successfully edited!'}), 200
-    
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    
-    finally:
-        cursor.close()
-        conn.close()    
 
 @app.route('/images/<filename>')
 def uploaded_file(filename):

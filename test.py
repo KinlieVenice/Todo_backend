@@ -125,4 +125,60 @@ def get_subjects():
     finally:
         cursor.close()
         conn.close()
+
+
+# @app.route('/tasks/done', methods=['GET'])
+# def get_done():
+#     conn = pymysql.connect(
+#         host=app.config["MYSQL_HOST"], 
+#         user=app.config["MYSQL_USER"], 
+#         password=app.config["MYSQL_PASSWORD"], 
+#         database=app.config["MYSQL_DB"]
+#     )
+#     cursor = conn.cursor()
+    
+#     try:
+#         cursor.execute(
+#             """
+#             SELECT * FROM tasks WHERE is_done = 1;
+#             """
+#         )
         
+#         fetched_done = cursor.fetchall()
+        
+#         if not fetched_done:
+#             return [], 200
+        
+#         done = []
+#         for indiv in fetched_done:
+#             # subj_dict = {}
+            
+#             # subj_dict["id"] = subj[0]
+#             # subj_dict["name"] = subj[1]
+#             # subj_dict["img_filename"] = subj[2]
+#             # subj_dict["classification_id"] = subj[3]
+            
+#             # subjects.append(subj_dict)
+            
+#             done.append(
+#                     {
+#                         "id": indiv[0], 
+#                         "name": indiv[1],   
+#                         "description": indiv[2],
+#                         "deadline": indiv[3],
+#                         "img_filename": indiv[4],
+#                         "subject_id": indiv[5],
+#                         "is_done": indiv[6]              
+#                     }
+#                 )
+            
+            
+#         return jsonify(done), 200
+    
+#     except Exception as e:
+#         return jsonify({'error': str(e)}), 500
+    
+#     finally:
+#         cursor.close()
+#         conn.close()
+
