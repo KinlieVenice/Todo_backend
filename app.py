@@ -815,11 +815,44 @@ def unmark_task_done(id):
         cursor.close()
         conn.close()
 
+@app.route('/api/register/<int:id>', methods=['GET'])
+@token_required
+def get_user(id):
+    user_id = request.user_id  # From JWT token
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            "SELECT id, username, email, password, profile, header, bio FROM users WHERE id = %s",
+            (user_id,)  # Use user_id from token, or use id param if needed
+        )
+        user = cursor.fetchone()
+
+        if not user:
+            return jsonify([]), 200
+
+        return jsonify({
+            "id": user["id"],
+            "username": user["username"],
+            "email": user["email"],
+            "password": user["password"],
+            "profile": user["profile"],
+            "header": user["header"],
+            "bio": user["bio"]
+        }), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
 
 @app.route('/images/<filename>')
 def uploaded_file(filename):
     return send_from_directory('images', filename), 200
-
 
 if __name__ == '__main__':
     if not os.path.exists(app.config['UPLOAD_FOLDER']):
