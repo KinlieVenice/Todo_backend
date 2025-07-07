@@ -276,6 +276,66 @@ def get_user(id):
         cursor.close()
         conn.close()
 
+@app.route('/api/register/<int:id>', methods=['PATCH'])
+@token_required
+def edit_profile(id):
+    user_id = request.user_id  # Extracted from JWT token
+    profile = request.files.get('profile')
+    header = request.files.get('header')
+    bio = request.files.get('bio')
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("SELECT header, profile, bio FROM users WHERE id = %s", (id,))
+        existing = cursor.fetchone()
+        if not existing:
+            return jsonify({'error': 'User not found'}), 404
+
+        current_header = existing['header']
+        current_profile = existing['profile']
+        current_bio = existing['bio']
+
+        if header and header.filename:
+            header_filename = secure_filename(header.filename)
+            header_name = str(uuid.uuid4()) + "_" + header_filename
+            header.save(os.path.join(app.config['UPLOAD_FOLDER'], header_name))
+        else:
+            header_name = current_header
+
+        if profile and profile.filename:
+            profile_filename = secure_filename(profile.filename)
+            profile_name = str(uuid.uuid4()) + "_" + profile_filename
+            profile.save(os.path.join(app.config['UPLOAD_FOLDER'], profile_name))
+        else:
+            profile_name = current_profile
+
+        if bio and bio.filename:
+            bio_filename = secure_filename(bio.filename)
+            bio_name = str(uuid.uuid4()) + "_" + bio_filename
+            bio.save(os.path.join(app.config['UPLOAD_FOLDER'], bio_name))
+        else:
+            bio_name = current_bio
+
+        cursor.execute(
+            """
+            UPDATE users
+            SET profile = %s, header = %s, bio = %s
+            WHERE id = %s
+            """, (profile_name, header_name, bio_name, id)
+        )
+
+        conn.commit()
+        return jsonify({'response': 'Profile successfully updated'}), 200
+
+    except Exception as e:
+        print("ERROR:", str(e))
+        return jsonify({'error': str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
 
 # === validate email format ===
 def is_valid_email(email):
@@ -289,7 +349,6 @@ def is_strong_password(pw):
         re.search(r"[!@#$%^&*(),.?\":{}|<>]", pw)
     )
 
-    
 # ACTUAL NOTES ROUTES  
 @app.route('/')
 def home():
@@ -316,11 +375,19 @@ def get_subjects():
 
         subjects = []
         for subj in fetched_subjects:
+            cursor.execute(
+                "SELECT * FROM tasks WHERE subject_id = %s",
+                (subj["id"],)
+            )
+            
+            tasks = cursor.fetchall()
+
             subjects.append({
                 "id": subj["id"], 
                 "name": subj["name"],   
                 "class": subj["class"],
-                "color": subj["color"]
+                "color": subj["color"],
+                "task_length": len(tasks)
             })
 
         return jsonify(subjects), 200
@@ -561,15 +628,20 @@ def get_major():
             # subj_dict["classification_id"] = subj[3]
             
             # subjects.append(subj_dict)
+            cursor.execute(
+                "SELECT * FROM tasks WHERE subject_id = %s",
+                (major["id"],)
+            )
             
-            majors.append(
-                    {
-                        "id": major["id"], 
-                        "name": major["name"],   
-                        "class": major["class"],
-                        "color": major["color"]              
-                    }
-                )
+            tasks = cursor.fetchall()
+
+            majors.append({
+                "id": major["id"], 
+                "name": major["name"],   
+                "class": major["class"],
+                "color": major["color"],
+                "task_length": len(tasks)
+            })
             
             
         return jsonify(majors), 200
@@ -585,12 +657,7 @@ def get_major():
 @token_required
 def get_minor():
     user_id = request.user_id  # Extracted from JWT token
-    conn = pymysql.connect(
-        host=app.config["MYSQL_HOST"], 
-        user=app.config["MYSQL_USER"], 
-        password=app.config["MYSQL_PASSWORD"], 
-        database=app.config["MYSQL_DB"]
-    )
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     try:
@@ -613,14 +680,20 @@ def get_minor():
             
             # subjects.append(subj_dict)
             
-            minors.append(
-                    {
-                        "id": minor[0], 
-                        "name": minor[1],   
-                        "class": minor[2],
-                        "color": minor[3]              
-                    }
-                )
+            cursor.execute(
+                "SELECT * FROM tasks WHERE subject_id = %s",
+                (minor["id"],)
+            )
+            
+            tasks = cursor.fetchall()
+
+            minors.append({
+                "id": minor["id"], 
+                "name": minor["name"],   
+                "class": minor["class"],
+                "color": minor["color"],
+                "task_length": len(tasks)
+            })
             
             
         return jsonify(minors), 200
