@@ -444,7 +444,7 @@ def get_subject_tasks(subject_id):
             else:
                 due_str = "Due soon"
 
-            formatted_date = deadline_dt.strftime("%B %d, %Y")
+            formatted_date = deadline_dt.strftime("%b %d, %Y")
             formatted_time = deadline_dt.strftime("%I:%M %p").lstrip("0")
 
             tasks.append({
@@ -764,7 +764,7 @@ def get_done_tasks():
             else:
                 due_str = "Due soon"
 
-            formatted_date = deadline_dt.strftime("%B %d, %Y")
+            formatted_date = deadline_dt.strftime("%b %d, %Y")
             formatted_time = deadline_dt.strftime("%I:%M %p").lstrip("0")
 
             tasks.append({
