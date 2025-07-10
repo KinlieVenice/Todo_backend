@@ -380,14 +380,28 @@ def get_subjects():
                 (subj["id"],)
             )
             
-            tasks = cursor.fetchall()
+            tasks_all = cursor.fetchall()
+            all_length = len(tasks_all)
+            
+            cursor.execute(
+                "SELECT * FROM tasks WHERE subject_id = %s AND is_done = 1",
+                (subj["id"],)
+            )
+            
+            tasks_done = cursor.fetchall()
+            done_length = len(tasks_done)
+            
+            if all_length == done_length:
+                task_length = 0
+            else:
+                task_length = all_length - done_length
 
             subjects.append({
                 "id": subj["id"], 
                 "name": subj["name"],   
                 "class": subj["class"],
                 "color": subj["color"],
-                "task_length": len(tasks)
+                "task_length": task_length
             })
 
         return jsonify(subjects), 200
