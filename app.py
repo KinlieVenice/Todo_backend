@@ -151,21 +151,8 @@ def register():
     password = request.form.get("password", "").strip()
     confirm_password = request.form.get("confirm_password", "").strip()
 
-    header = request.files.get('header')
-    profile = request.files.get('profile')
-    bio = request.files.get('bio')
-
-    header_filename = str(uuid.uuid1()) + '_' + secure_filename(header.filename)
-    header.save(os.path.join(app.config['UPLOAD_FOLDER'], header_filename))
-
-    profile_filename = str(uuid.uuid1()) + '_' + secure_filename(profile.filename)
-    profile.save(os.path.join(app.config['UPLOAD_FOLDER'], profile_filename))
-
-    bio_filename = str(uuid.uuid1()) + '_' + secure_filename(bio.filename)
-    bio.save(os.path.join(app.config['UPLOAD_FOLDER'], bio_filename))
-    
     # === Validation ===
-    if not all([username, email, password, confirm_password, header, profile, bio]):
+    if not all([username, email, password, confirm_password]):
         return jsonify({"error": "All fields are required"}), 400
 
     if not re.match(r"^[a-zA-Z0-9_]{4,20}$", username):
@@ -179,14 +166,19 @@ def register():
 
     if password != confirm_password:
         return jsonify({"error": "Passwords do not match."}), 400
-    
+
     # === Hash password ===
     hashed_pw = generate_password_hash(password)
-    
+
+    # === Set Default Images ===
+    default_profile = "default_profile.jpg"
+    default_header = "default_header.jpg"
+    default_bio = "default_bio.jpg" 
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+
         cursor.execute("SELECT * FROM users WHERE username = %s OR email = %s", (username, email))
         existing = cursor.fetchone()
         if existing:
@@ -194,25 +186,23 @@ def register():
                 return jsonify({"error": "Username already taken"}), 409
             if existing["email"] == email:
                 return jsonify({"error": "Email already registered"}), 409
-        
-        # === Save user ===
+
+        # === Save User with Default Images ===
         cursor.execute(
             "INSERT INTO users (username, email, password, profile, header, bio) VALUES (%s, %s, %s, %s, %s, %s)",
-            (username, email, hashed_pw, profile_filename, header_filename, bio_filename)
+            (username, email, hashed_pw, default_profile, default_header, default_bio)
         )
-        
+
         conn.commit()
-        
-        # === Get the newly made user id ===
         user_id = cursor.lastrowid
-        
+
         # === Generate JWT Token ===
         token = jwt.encode({
             "user_id": user_id,
             "username": username,
             "exp": int((datetime.utcnow() + timedelta(days=30)).timestamp())
         }, app.config["SECRET_KEY"], algorithm="HS256")
-        
+
         return jsonify({"message": "Registration successful", "token": token}), 201
 
     except Exception as e:
@@ -288,7 +278,7 @@ def edit_profile(id):
     cursor = conn.cursor()
 
     try:
-        cursor.execute("SELECT header, profile, bio FROM users WHERE id = %s", (id,))
+        cursor.execute("SELECT header, profile, bio FROM users WHERE id = %s", (user_id,))
         existing = cursor.fetchone()
         if not existing:
             return jsonify({'error': 'User not found'}), 404
@@ -301,6 +291,10 @@ def edit_profile(id):
             header_filename = secure_filename(header.filename)
             header_name = str(uuid.uuid4()) + "_" + header_filename
             header.save(os.path.join(app.config['UPLOAD_FOLDER'], header_name))
+            
+            old_header_path = os.path.join(app.config['UPLOAD_FOLDER'], current_header)
+            if os.path.exists(old_header_path) and current_header not in ["default_header.jpg"]:  # Skip deleting defaults
+                os.remove(old_header_path)
         else:
             header_name = current_header
 
@@ -308,6 +302,10 @@ def edit_profile(id):
             profile_filename = secure_filename(profile.filename)
             profile_name = str(uuid.uuid4()) + "_" + profile_filename
             profile.save(os.path.join(app.config['UPLOAD_FOLDER'], profile_name))
+            
+            old_profile_path = os.path.join(app.config['UPLOAD_FOLDER'], current_profile)
+            if os.path.exists(old_profile_path) and current_profile not in ["default_profile.jpg"]:  # Skip deleting defaults
+                os.remove(old_profile_path)
         else:
             profile_name = current_profile
 
@@ -315,15 +313,20 @@ def edit_profile(id):
             bio_filename = secure_filename(bio.filename)
             bio_name = str(uuid.uuid4()) + "_" + bio_filename
             bio.save(os.path.join(app.config['UPLOAD_FOLDER'], bio_name))
+            
+            old_bio_path = os.path.join(app.config['UPLOAD_FOLDER'], current_bio)
+            if os.path.exists(old_bio_path) and current_bio not in ["default_bio.jpg"]:  # Skip deleting defaults
+                os.remove(old_bio_path)
         else:
             bio_name = current_bio
 
+    
         cursor.execute(
             """
             UPDATE users
             SET profile = %s, header = %s, bio = %s
             WHERE id = %s
-            """, (profile_name, header_name, bio_name, id)
+            """, (profile_name, header_name, bio_name, user_id)
         )
 
         conn.commit()
@@ -647,14 +650,28 @@ def get_major():
                 (major["id"],)
             )
             
-            tasks = cursor.fetchall()
+            tasks_all = cursor.fetchall()
+            all_length = len(tasks_all)
+            
+            cursor.execute(
+                "SELECT * FROM tasks WHERE subject_id = %s AND is_done = 1",
+                (major["id"],)
+            )
+            
+            tasks_done = cursor.fetchall()
+            done_length = len(tasks_done)
+            
+            if all_length == done_length:
+                task_length = 0
+            else:
+                task_length = all_length - done_length
 
             majors.append({
                 "id": major["id"], 
                 "name": major["name"],   
                 "class": major["class"],
                 "color": major["color"],
-                "task_length": len(tasks)
+                "task_length": task_length
             })
             
             
@@ -699,14 +716,28 @@ def get_minor():
                 (minor["id"],)
             )
             
-            tasks = cursor.fetchall()
+            tasks_all = cursor.fetchall()
+            all_length = len(tasks_all)
+            
+            cursor.execute(
+                "SELECT * FROM tasks WHERE subject_id = %s AND is_done = 1",
+                (minor["id"],)
+            )
+            
+            tasks_done = cursor.fetchall()
+            done_length = len(tasks_done)
+            
+            if all_length == done_length:
+                task_length = 0
+            else:
+                task_length = all_length - done_length
 
             minors.append({
                 "id": minor["id"], 
                 "name": minor["name"],   
                 "class": minor["class"],
                 "color": minor["color"],
-                "task_length": len(tasks)
+                "task_length": task_length
             })
             
             
@@ -854,7 +885,7 @@ def edit_task(id):
     cursor = conn.cursor()
 
     try:
-        # Get the current image filename in case no new image is uploaded
+        # Get the current image filename
         cursor.execute("SELECT img_filename FROM tasks WHERE id = %s AND user_id = %s", (id, user_id))
         existing = cursor.fetchone()
         if not existing:
@@ -867,13 +898,19 @@ def edit_task(id):
             img_filename = secure_filename(image.filename)
             img_name = str(uuid.uuid4()) + "_" + img_filename
             image.save(os.path.join(app.config['UPLOAD_FOLDER'], img_name))
+
+            # Delete old image file (if exists and not a default image)
+            old_img_path = os.path.join(app.config['UPLOAD_FOLDER'], current_img)
+            if os.path.exists(old_img_path):  # Skip deleting defaults
+                os.remove(old_img_path)
+
         else:
-            img_name = current_img  # Keep existing
+            img_name = current_img  # Keep existing image
 
         # Parse deadline string to datetime
         deadline_dt = datetime.strptime(deadline, '%Y-%m-%d %H:%M:%S')
 
-        # Update task
+        # Update task in DB
         cursor.execute(
             """
             UPDATE tasks
